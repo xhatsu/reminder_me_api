@@ -1,0 +1,8 @@
+    # Ignore compiled files and build artifacts
+
+    # Ignore dependency directories
+
+    # Ignore temporary or system files
+
+    # Ignore sensitive information
+    .env
