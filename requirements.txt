@@ -1,4 +1,5 @@
 Flask
+gunicorn
 Flask-SQLAlchemy
 psycopg2-binary # For PostgreSQL connection
 Flask-Login
