@@ -21,11 +21,12 @@ def get_user_by_email(user_email):
     if user:
         return jsonify(user.to_dict()), 200
     return jsonify({"message": "User not found"}), 404
-@api_bp.route('/reminder/<int:user_id>', methods=['GET'])
+@api_bp.route('/reminder/user/<int:user_id>', methods=['GET'])
 def get_reminder_by_user_id(user_id):
-
-    reminders = get_reminders_for_user(user_id)
-
+    try:
+        reminders = get_reminders_for_user(user_id)
+    except Exception as e:
+        return jsonify({"message": str(e)}), 404
     if reminders:
         reminder_data_created = [reminder.to_dict() for reminder in reminders["created"]]
         reminder_data_received = [reminder.to_dict() for reminder in reminders["received"]]
