@@ -7,3 +7,5 @@ python-dotenv
 pywebpush
 gunicorn
 pytest
+pytest-mock
+google-auth

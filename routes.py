@@ -1,8 +1,16 @@
+import os
+
 from flask import Blueprint, jsonify, request
 from DAO import *
 from models import *
+from google.oauth2 import id_token
+from google.auth.transport import requests
 
 api_bp = Blueprint('api', __name__)
+GOOGLE_CLIENT_ID = os.getenv('GOOGLE_CLIENT_ID')
+
+class UserCreationError(Exception):
+    pass
 
 @api_bp.route('/')
 def index():
@@ -10,17 +18,6 @@ def index():
     Deny request
     """
     return jsonify({"message": "Request Denied"}), 404
-
-@api_bp.route('/users/<string:user_email>', methods=['GET'])
-def get_user_by_email(user_email):
-    """
-    GET /users/<user_id>: Returns a single user by their ID.
-    """
-    user = search_user_by_email(user_email)
-    print(user)
-    if user:
-        return jsonify(user.to_dict()), 200
-    return jsonify({"message": "User not found"}), 404
 @api_bp.route('/reminder/user/<int:user_id>', methods=['GET'])
 def get_reminder_by_user_id(user_id):
     try:
@@ -108,21 +105,62 @@ def remove_reminder():
     return jsonify({"message": "Reminder removed successfully"}), 200
 
 @api_bp.route('/register', methods=['POST'])
-def register_user():
-    if not request.is_json:
-        return jsonify({"message": "Request must be JSON"}), 400
-    data = request.get_json()
-    required_fields = ['username', 'email', 'password_hash']
-    for field in required_fields:
-        if field not in data:
-            return jsonify({"message": f"Missing required field: {field}"}), 400
-    username = data['username']
-    email = data['email']
-    hashed_password = data['password_hash']
+
+@api_bp.route('/google/signin', methods=['POST'])
+def google_signin():
+    # The ID token is sent in the request body
+    token = request.json.get("id_token")
+    if not token:
+        return jsonify({"error": "No ID token provided"}), 400
+
+    try:
+        # Validate the token
+        idinfo = id_token.verify_oauth2_token(token, requests.Request(), GOOGLE_CLIENT_ID)
+
+        # Check if the token was issued for your client ID
+        # if idinfo["aud"] != GOOGLE_CLIENT_ID:
+        #     raise ValueError("Invalid aud claim.")
+
+        # The ID token contains the user's profile information
+        userid = idinfo["sub"]
+        email = idinfo["email"]
+        name = idinfo["name"]
+    except ValueError as e:
+        # The token is invalid, expired, or has a different aud claim
+        return jsonify({"error": str(e)}), 401
+        # At this point, the user is authenticated.
+        # You can now create or retrieve their account in your database.
+    try:
+        user = get_user_by_email(email)
+        if user is None:
+            user = register_user(name, email)
+        if user:
+            return jsonify(
+                user.to_dict(),
+            ), 200
+    except UserCreationError as e:
+        return jsonify({"error": str(e)}), 400
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+# -------- Support functions ---------
+
+def get_user_by_email(user_email):
+    try:
+        user = search_user_by_email(user_email)
+    except Exception as e:
+        print(e)
+        return None
+    # print(user)
+    return user
+
+def register_user(username, email):
+    hashed_password = "hashedPassword"
     try:
         new_user = add_user(username, email, hashed_password)
+        if not new_user:
+            raise UserCreationError("Database returned no user object after creation.")
+        return new_user
     except Exception as e:
-        return jsonify({"message": "An error occurred", "error": str(e)}), 500
-    if not new_user:
-        return jsonify({"message": "User creation failed"}), 500
-    return jsonify({"message": f"User {new_user.username} registered successfully"}), 201
+        raise UserCreationError(f"An error occurred while registering user: {e}")
