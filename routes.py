@@ -1,16 +1,67 @@
 import os
-
+import datetime
+from datetime import timedelta, timezone
+from functools import wraps
 from flask import Blueprint, jsonify, request
+from flask.cli import load_dotenv
 from DAO import *
 from models import *
 from google.oauth2 import id_token
 from google.auth.transport import requests
+import jwt
 
+load_dotenv()
 api_bp = Blueprint('api', __name__)
 GOOGLE_CLIENT_ID = os.getenv('GOOGLE_CLIENT_ID')
-
+SECRET_KEY = os.getenv('SECRET_KEY')
+print(SECRET_KEY)
 class UserCreationError(Exception):
     pass
+
+# -------- Support functions ---------
+def jwt_required(func):
+    @wraps(func)
+    def wrapper(*args, **kwargs):
+        auth_header = request.headers.get("Authorization", None)
+        if not auth_header or not auth_header.startswith("Bearer "):
+            return jsonify({"msg": "Missing or invalid Authorization header"}), 401
+
+        token = auth_header.split(" ")[1]
+        print(token)
+        try:
+            print(SECRET_KEY)
+            payload = jwt.decode(token, SECRET_KEY, algorithms=['HS256'])
+            request.user_id = payload.get("sub")
+            request.user_email = payload.get("email")
+        except jwt.ExpiredSignatureError:
+            return jsonify({"msg": "Token expired"}), 401
+        except jwt.InvalidTokenError as InvalidTokenError:
+            return jsonify({"msg": "Invalid token", "error": str(InvalidTokenError) }), 401
+
+        return func(*args, **kwargs)
+
+    return wrapper
+
+def get_user_by_email(user_email):
+    try:
+        user = search_user_by_email(user_email)
+    except Exception as e:
+        print(e)
+        return None
+    # print(user)
+    return user
+
+def register_user(username, email):
+    hashed_password = "hashedPassword"
+    try:
+        new_user = add_user(username, email, hashed_password)
+        if not new_user:
+            raise UserCreationError("Database returned no user object after creation.")
+        return new_user
+    except Exception as e:
+        raise UserCreationError(f"An error occurred while registering user: {e}")
+
+# ------- API Routes
 
 @api_bp.route('/')
 def index():
@@ -18,8 +69,11 @@ def index():
     Deny request
     """
     return jsonify({"message": "Request Denied"}), 404
-@api_bp.route('/reminder/user/<int:user_id>', methods=['GET'])
-def get_reminder_by_user_id(user_id):
+
+@api_bp.route('/reminders/get', methods=['GET'])
+@jwt_required
+def get_reminder_by_user_id():
+    user_id = getattr(request, "user_id", None)
     try:
         reminders = get_reminders_for_user(user_id)
     except Exception as e:
@@ -33,7 +87,9 @@ def get_reminder_by_user_id(user_id):
         }
         return jsonify(data), 200
     return jsonify({"message": "Reminder not found"}), 404
+
 @api_bp.route('/reminders/add', methods=['POST'])
+@jwt_required
 def add_reminder():
     if not request.is_json:
         return jsonify({"message": "Request must be JSON"}), 400
@@ -79,6 +135,7 @@ def add_reminder():
         return jsonify({"message": "An error occurred while creating the reminder", "error": str(e)}), 500
 
 @api_bp.route('/reminders/remove', methods=['POST'])
+@jwt_required
 def remove_reminder():
     if not request.is_json:
         return jsonify({"message": "Request must be JSON"}), 400
@@ -104,15 +161,12 @@ def remove_reminder():
         return jsonify({"message": "An error occurred", "error": str(e)}), 500
     return jsonify({"message": "Reminder removed successfully"}), 200
 
-@api_bp.route('/register', methods=['POST'])
-
 @api_bp.route('/google/signin', methods=['POST'])
 def google_signin():
     # The ID token is sent in the request body
     token = request.json.get("id_token")
     if not token:
         return jsonify({"error": "No ID token provided"}), 400
-
     try:
         # Validate the token
         idinfo = id_token.verify_oauth2_token(token, requests.Request(), GOOGLE_CLIENT_ID)
@@ -135,32 +189,19 @@ def google_signin():
         if user is None:
             user = register_user(name, email)
         if user:
+            payload = {
+                'sub': str(user.id),
+                'email': user.email,
+                'exp': datetime.now(timezone.utc) + timedelta(hours=24),
+                }
+            token = jwt.encode(payload, SECRET_KEY, algorithm='HS256')
+            print(token)
             return jsonify(
-                user.to_dict(),
+                {
+                    "token": token,
+                }
             ), 200
     except UserCreationError as e:
         return jsonify({"error": str(e)}), 400
     except Exception as e:
         return jsonify({"error": str(e)}), 500
-
-
-# -------- Support functions ---------
-
-def get_user_by_email(user_email):
-    try:
-        user = search_user_by_email(user_email)
-    except Exception as e:
-        print(e)
-        return None
-    # print(user)
-    return user
-
-def register_user(username, email):
-    hashed_password = "hashedPassword"
-    try:
-        new_user = add_user(username, email, hashed_password)
-        if not new_user:
-            raise UserCreationError("Database returned no user object after creation.")
-        return new_user
-    except Exception as e:
-        raise UserCreationError(f"An error occurred while registering user: {e}")
